@@ -11,10 +11,8 @@ if (!supabaseUrl || !supabaseKey) {
   throw new Error('Faltan variables de entorno de Supabase');
 }
 
-// Cliente público para operaciones de usuarios
 export const supabase = createClient(supabaseUrl, supabaseKey);
 
-// Cliente de servicio para operaciones administrativas
 export const supabaseAdmin = createClient(supabaseUrl, serviceKey || supabaseKey);
 
 export default supabase;

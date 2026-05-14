@@ -5,21 +5,22 @@ import { authorize } from '../middleware/authorization';
 
 const router = Router();
 
+// Rutas específicas ANTES que las dinámicas (/:id capturaría "my", "requests", etc.)
+router.get('/my/team', authenticateToken, authorize('manager', 'admin'), teamController.getMyTeam);
+router.post('/requests/:requestId/respond', authenticateToken, authorize('manager', 'admin'), teamController.respondToRequest);
+
 // Rutas públicas
 router.get('/', teamController.getAllTeams);
 router.get('/:id', teamController.getTeamById);
 
-// Rutas autenticadas
-router.get('/my/team', authenticateToken, authorize('manager'), teamController.getMyTeam);
+// Rutas autenticadas con parámetro dinámico
+router.post('/:id/request', authenticateToken, authorize('player'), teamController.sendJoinRequest);
+router.get('/:id/requests', authenticateToken, authorize('manager', 'admin'), teamController.getTeamRequests);
+router.delete('/:teamId/players/:playerId', authenticateToken, authorize('manager', 'admin'), teamController.removePlayer);
+
+// CRUD de equipos
 router.post('/', authenticateToken, authorize('manager', 'admin'), teamController.createTeam);
 router.put('/:id', authenticateToken, teamController.updateTeam);
 router.delete('/:id', authenticateToken, teamController.deleteTeam);
-
-// Gestión de solicitudes
-router.get('/:id/requests', authenticateToken, authorize('manager'), teamController.getTeamRequests);
-router.post('/requests/:requestId/respond', authenticateToken, authorize('manager'), teamController.respondToRequest);
-
-// Gestión de jugadores
-router.delete('/:teamId/players/:playerId', authenticateToken, authorize('manager'), teamController.removePlayer);
 
 export default router;

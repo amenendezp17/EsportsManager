@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build outputs
+dist/
+build/
+**/dist/
+
+# Environment files
+.env
+**/.env
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+*.suo
+*.user
+
+# Docker
+.dockerignore
+
+# Electron build output
+electron/dist/
+electron/out/
+
+# Android / iOS (Capacitor)
+esports-admin/android/
+esports-admin/ios/
