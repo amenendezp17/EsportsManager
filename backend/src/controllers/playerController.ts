@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { supabase, supabaseAdmin } from '../config/supabase';
+import { createNotification } from './notificationController';
 
 export const playerController = {
   async getAllPlayers(req: Request, res: Response): Promise<any> {
@@ -14,36 +15,23 @@ export const playerController = {
         return res.status(400).json({ error: playersError.message });
       }
 
-      console.log('👥 Total players:', players?.length);
-
       // Luego obtener todos los usuarios con el cliente admin para bypassear RLS
       const { data: users, error: usersError } = await supabaseAdmin
         .from('users')
         .select('id, email, full_name, role');
 
       if (usersError) {
-        console.error('❌ Error getting users:', usersError);
         return res.status(400).json({ error: usersError.message });
       }
 
-      console.log('👤 Total users:', users?.length);
-      console.log('👤 Sample user:', users?.[0]);
-
       // Crear un mapa de usuarios por ID para búsqueda rápida
       const usersMap = new Map(users?.map(u => [u.id, u]) || []);
-
-      console.log('🗺️ UsersMap size:', usersMap.size);
-      console.log('🔍 Looking for user_id:', players?.[0]?.user_id);
-      console.log('🔍 User found:', usersMap.get(players?.[0]?.user_id));
 
       // Combinar los datos
       const playersWithUsers = players?.map(player => ({
         ...player,
         users: usersMap.get(player.user_id) || null
       })) || [];
-
-      console.log('✅ Players retrieved:', playersWithUsers.length);
-      console.log('📊 Sample player data:', JSON.stringify(playersWithUsers[0], null, 2));
       
       return res.json(playersWithUsers);
     } catch (error: any) {
@@ -303,15 +291,32 @@ export const playerController = {
         return res.status(400).json({ error: 'El parámetro game es requerido' });
       }
 
-      const { data, error } = await supabase
+      const { data: profiles, error } = await supabaseAdmin
         .from('players')
-        .select('*')
+        .select('*, team:teams(id, name, abbreviation, game, manager_id)')
         .eq('user_id', userId)
         .eq('game', game)
-        .single();
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+      let data = profiles?.[0] || null;
 
       if (error) {
-        return res.status(404).json({ error: 'Perfil de jugador no encontrado' });
+        return res.status(400).json({ error: error.message });
+      }
+
+      if (!data) {
+        // Auto-create a player profile for any user who doesn't have one yet
+        const { data: newProfile, error: createError } = await supabaseAdmin
+          .from('players')
+          .insert({ user_id: userId, game, role: null, rank: null })
+          .select('*, team:teams(id, name, abbreviation, game, manager_id)')
+          .single();
+
+        if (createError) {
+          return res.status(404).json({ error: 'Perfil de jugador no encontrado' });
+        }
+        data = newProfile;
       }
 
       return res.json(data);
@@ -336,19 +341,34 @@ export const playerController = {
         return res.status(400).json({ error: 'El parámetro game es requerido' });
       }
 
-      // Buscar el player existente
-      const { data: existingPlayer } = await supabase
+      // Buscar el player existente o crear uno nuevo
+      const { data: existingPlayers, error: existingPlayersError } = await supabaseAdmin
         .from('players')
         .select('id')
         .eq('user_id', userId)
         .eq('game', game)
-        .single();
+        .order('created_at', { ascending: false })
+        .limit(1);
 
-      if (!existingPlayer) {
-        return res.status(404).json({ error: 'Perfil de jugador no encontrado' });
+      if (existingPlayersError) {
+        return res.status(400).json({ error: existingPlayersError.message });
       }
 
-      // Actualizar solo role y rank
+      let existingPlayer = existingPlayers?.[0] || null;
+
+      if (!existingPlayer) {
+        const { data: newPlayer, error: createErr } = await supabaseAdmin
+          .from('players')
+          .insert({ user_id: userId, game, role: null, rank: null })
+          .select('id')
+          .single();
+        if (createErr || !newPlayer) {
+          return res.status(500).json({ error: 'No se pudo crear el perfil de jugador' });
+        }
+        existingPlayer = newPlayer;
+      }
+
+      // Actualizar role y rank
       const updateData: any = {};
       if (role !== undefined) updateData.role = role;
       if (rank !== undefined) updateData.rank = rank;
@@ -370,6 +390,125 @@ export const playerController = {
       });
     } catch (error: any) {
       console.error('Error en updateMyProfile:', error);
+      return res.status(500).json({ error: 'Error en el servidor' });
+    }
+  },
+
+  async leaveMyTeam(req: Request, res: Response): Promise<any> {
+    try {
+      const userId = (req as any).user?.id;
+      const { game } = req.query;
+
+      if (!userId) {
+        return res.status(401).json({ error: 'Usuario no autenticado' });
+      }
+
+      if (!game) {
+        return res.status(400).json({ error: 'El parámetro game es requerido' });
+      }
+
+      const { data: player, error: playerError } = await supabaseAdmin
+        .from('players')
+        .select('id, team_id, team:teams(id, name, manager_id)')
+        .eq('user_id', userId)
+        .eq('game', game)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (playerError) {
+        return res.status(400).json({ error: playerError.message });
+      }
+
+      const teamData: any = Array.isArray((player as any)?.team) ? (player as any).team[0] : (player as any)?.team;
+
+      if (!player || !player.team_id || !teamData) {
+        return res.status(400).json({ error: 'No perteneces a ningún equipo en este juego' });
+      }
+
+      const { data: userData } = await supabaseAdmin
+        .from('users')
+        .select('full_name, email')
+        .eq('id', userId)
+        .single();
+
+      const playerName = userData?.full_name || userData?.email || 'Un jugador';
+
+      const { error: updateError } = await supabaseAdmin
+        .from('players')
+        .update({ team_id: null })
+        .eq('id', player.id);
+
+      if (updateError) {
+        return res.status(400).json({ error: updateError.message });
+      }
+
+      await createNotification(userId, `Has salido del equipo "${teamData.name}".`);
+      if (teamData.manager_id && teamData.manager_id !== userId) {
+        await createNotification(teamData.manager_id, `${playerName} ha abandonado tu equipo "${teamData.name}".`);
+      }
+
+      return res.json({ message: 'Has abandonado el equipo correctamente' });
+    } catch (error: any) {
+      console.error('Error en leaveMyTeam:', error);
+      return res.status(500).json({ error: 'Error en el servidor' });
+    }
+  },
+
+  // Obtener solicitudes de unión enviadas por el jugador actual
+  async getMyJoinRequests(req: Request, res: Response): Promise<any> {
+    try {
+      const userId = (req as any).user?.id;
+      if (!userId) return res.status(401).json({ error: 'Usuario no autenticado' });
+
+      const { data, error } = await supabaseAdmin
+        .from('team_join_requests')
+        .select(`
+          id,
+          status,
+          created_at,
+          teams (
+            id,
+            name,
+            abbreviation,
+            game
+          )
+        `)
+        .eq('player_id', userId)
+        .order('created_at', { ascending: false });
+
+      if (error) return res.status(400).json({ error: error.message });
+
+      return res.json(data || []);
+    } catch (error: any) {
+      return res.status(500).json({ error: 'Error en el servidor' });
+    }
+  },
+
+  // Actualizar el rol de un jugador (manager o admin)
+  async updatePlayerRole(req: Request, res: Response): Promise<any> {
+    try {
+      const { id } = req.params;
+      const { role } = req.body;
+
+      if (!role) {
+        return res.status(400).json({ error: 'El campo role es requerido' });
+      }
+
+      const { data, error } = await supabaseAdmin
+        .from('players')
+        .update({ role })
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (error) {
+        return res.status(400).json({ error: error.message });
+      }
+
+      return res.json({ message: 'Rol actualizado', data });
+    } catch (error: any) {
+      console.error('Error en updatePlayerRole:', error);
       return res.status(500).json({ error: 'Error en el servidor' });
     }
   },
